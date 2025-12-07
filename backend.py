@@ -1,5 +1,9 @@
+import os
+print("FILES IN APP DIRECTORY:", os.listdir(Path(__file__).parent))
+
 import re
 from pathlib import Path
+from typing import List, Dict, Any, Union
 
 import numpy as np
 import pandas as pd
@@ -8,22 +12,22 @@ import pandas as pd
 # 1. Load and clean menu data from Menus.xlsx
 # -------------------------------------------------------------------
 
-# Path to Menus.xlsx (must be in the same folder as this file)
 DATA_PATH = Path(__file__).parent / "Menus.xlsx"
 
-dfs_menus = {}
+dfs_menus: Dict[str, pd.DataFrame] = {}
 all_menus_df = pd.DataFrame()
 
 if DATA_PATH.exists():
     try:
-        excel_file = pd.ExcelFile(DATA_PATH)
+        # Explicitly use openpyxl so it works on Streamlit Cloud
+        excel_file = pd.ExcelFile(DATA_PATH, engine="openpyxl")
         sheet_names = excel_file.sheet_names
+        print(f"[backend] Loaded Menus.xlsx with sheets: {sheet_names}")
 
         for sheet_name in sheet_names:
-            df = pd.read_excel(DATA_PATH, sheet_name=sheet_name)
+            df = pd.read_excel(DATA_PATH, sheet_name=sheet_name, engine="openpyxl")
 
             # --- Cleaning and Standardization ---
-            # 1. Standardize column names
             column_mapping = {
                 "Name of item": "Name",
                 "Total calories": "Calories",
@@ -35,7 +39,7 @@ if DATA_PATH.exists():
             }
             df = df.rename(columns=column_mapping)
 
-            # 2. Clean 'Price' column
+            # Clean 'Price' column
             if "Price" in df.columns:
                 if df["Price"].dtype == "object":
                     df["Price"] = df["Price"].astype(str)
@@ -47,11 +51,11 @@ if DATA_PATH.exists():
                     )
                     df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
 
-            # 3. Handle missing 'Sugar (g)'
+            # Handle missing 'Sugar (g)'
             if "Sugar (g)" in df.columns:
                 df["Sugar (g)"] = df["Sugar (g)"].fillna(0)
 
-            # 4. Handle missing values in other numeric columns by filling with mean
+            # Fill numeric columns with mean
             numeric_cols_to_fill = ["Calories", "Protein (g)", "Carbs (g)", "Fat (g)"]
             for col in numeric_cols_to_fill:
                 if col in df.columns and df[col].isnull().any():
@@ -60,7 +64,6 @@ if DATA_PATH.exists():
 
             dfs_menus[sheet_name] = df
 
-        # Combine all DataFrames into a single one
         combined = []
         for restaurant_name, df in dfs_menus.items():
             df = df.copy()
@@ -69,14 +72,12 @@ if DATA_PATH.exists():
 
         if combined:
             all_menus_df = pd.concat(combined, ignore_index=True)
+            print(f"[backend] Combined menu rows: {len(all_menus_df)}")
 
     except Exception as e:
-        print(f"Error loading Menus.xlsx: {e}")
+        print(f"[backend] Error loading Menus.xlsx: {e}")
 else:
-    print(
-        f"Warning: {DATA_PATH} not found. "
-        "Put Menus.xlsx in the same folder as backend.py and app.py."
-    )
+    print(f"[backend] Warning: {DATA_PATH} not found. Menu data will be empty.")
 
 
 # -------------------------------------------------------------------
@@ -91,9 +92,7 @@ def tag_dietary_preferences(df: pd.DataFrame) -> pd.DataFrame:
     df["is_nut_free"] = False
 
     # Sweetgreen vegetarian tagging
-    df.loc[df["Restaurant"] == "Sweetgreen Menu", "is_vegetarian"] = ~df[
-        "Name"
-    ].str.contains(
+    df.loc[df["Restaurant"] == "Sweetgreen Menu", "is_vegetarian"] = ~df["Name"].str.contains(
         "Steak|Chicken|Tuna|Shrimp|Salmon|Pork|Bacon", case=False, na=False
     )
 
@@ -137,9 +136,9 @@ def tag_dietary_preferences(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def parse_user_query(query: str) -> dict:
+def parse_user_query(query: str) -> Dict[str, Any]:
     """Parses a natural language query into structured parameters."""
-    parsed_data = {
+    parsed_data: Dict[str, Any] = {
         "cuisine": None,
         "max_calories": None,
         "excluded_ingredients": [],
@@ -175,10 +174,7 @@ def parse_user_query(query: str) -> dict:
     for pattern in exclusion_patterns:
         matches = re.findall(pattern, query_lower)
         for match in matches:
-            if match in ["gluten", "dairy", "nut", "shellfish", "soy", "egg"]:
-                parsed_data["excluded_ingredients"].append(match)
-            else:
-                parsed_data["excluded_ingredients"].append(match)
+            parsed_data["excluded_ingredients"].append(match)
 
     specific_exclusions_match = re.search(
         r"no\s+(.+?)(?:or\s+(.+?))?(?:\s+allerg(?:y|ies)|\s+exclusion)?(?:\s|$)",
@@ -211,7 +207,7 @@ def parse_user_query(query: str) -> dict:
     return parsed_data
 
 
-def retrieve_menu_items(all_menus_df: pd.DataFrame, parsed_query: dict) -> pd.DataFrame:
+def retrieve_menu_items(all_menus_df: pd.DataFrame, parsed_query: Dict[str, Any]) -> pd.DataFrame:
     """Retrieves menu items based on parsed user query parameters, leveraging dietary tags."""
     filtered_df = all_menus_df.copy()
 
@@ -232,34 +228,24 @@ def retrieve_menu_items(all_menus_df: pd.DataFrame, parsed_query: dict) -> pd.Da
             ]
         elif cuisine_lower == "american":
             filtered_df = filtered_df[
-                filtered_df["Restaurant"].str.contains(
-                    "BAR", case=False, na=False
-                )
+                filtered_df["Restaurant"].str.contains("BAR", case=False, na=False)
             ]
 
     # Calorie filtering
     if parsed_query["max_calories"] is not None and "Calories" in filtered_df.columns:
-        filtered_df = filtered_df[
-            filtered_df["Calories"] <= parsed_query["max_calories"]
-        ]
+        filtered_df = filtered_df[filtered_df["Calories"] <= parsed_query["max_calories"]]
 
     excluded_keywords = [item.lower() for item in parsed_query["excluded_ingredients"]]
 
     # Allergy / restriction filters using tags or name-based heuristics
     if "nuts" in excluded_keywords and "is_nut_free" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["is_nut_free"]]
-    elif "nuts" in excluded_keywords:
-        pass  # Cannot accurately filter without explicit tag
 
     if "gluten" in excluded_keywords and "is_gluten_free" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["is_gluten_free"]]
-    elif "gluten" in excluded_keywords:
-        pass
 
     if "dairy" in excluded_keywords and "is_dairy_free" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["is_dairy_free"]]
-    elif "dairy" in excluded_keywords:
-        pass
 
     if "seafood" in excluded_keywords:
         filtered_df = filtered_df[
@@ -273,16 +259,10 @@ def retrieve_menu_items(all_menus_df: pd.DataFrame, parsed_query: dict) -> pd.Da
         ]
 
     # Dietary preferences
-    if (
-        "vegetarian" in parsed_query["dietary_preferences"]
-        and "is_vegetarian" in filtered_df.columns
-    ):
+    if "vegetarian" in parsed_query["dietary_preferences"] and "is_vegetarian" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["is_vegetarian"]]
 
-    if (
-        "vegan" in parsed_query["dietary_preferences"]
-        and "is_vegan" in filtered_df.columns
-    ):
+    if "vegan" in parsed_query["dietary_preferences"] and "is_vegan" in filtered_df.columns:
         filtered_df = filtered_df[filtered_df["is_vegan"]]
 
     if "high-protein" in parsed_query["dietary_preferences"] and "Protein (g)" in filtered_df.columns:
@@ -292,9 +272,7 @@ def retrieve_menu_items(all_menus_df: pd.DataFrame, parsed_query: dict) -> pd.Da
     return filtered_df
 
 
-def generate_recommendations(
-    all_menus_df: pd.DataFrame, parsed_query: dict
-) -> list | str:
+def generate_recommendations(all_menus_df: pd.DataFrame, parsed_query: Dict[str, Any]) -> Union[str, List[Dict[str, Any]]]:
     """Generates restaurant and menu item recommendations based on a parsed user query."""
     if all_menus_df.empty:
         return "Menu data is not loaded. Please ensure Menus.xlsx is present."
@@ -304,11 +282,10 @@ def generate_recommendations(
     if filtered_items_df.empty:
         return "No recommendations found matching your criteria."
 
-    recommendations = []
+    filtered_items_df = filtered_items_df.copy()
 
     # Value metric: calories per dollar (for items with valid prices)
     if "Calories" in filtered_items_df.columns and "Price" in filtered_items_df.columns:
-        filtered_items_df = filtered_items_df.copy()
         filtered_items_df["value_metric"] = filtered_items_df.apply(
             lambda row: row["Calories"] / row["Price"]
             if pd.notna(row["Price"]) and row["Price"] > 0
@@ -318,10 +295,10 @@ def generate_recommendations(
     else:
         filtered_items_df["value_metric"] = 0
 
+    recommendations: List[Dict[str, Any]] = []
+
     for restaurant_name, restaurant_df in filtered_items_df.groupby("Restaurant"):
-        restaurant_df = restaurant_df.sort_values(
-            by="value_metric", ascending=False
-        )
+        restaurant_df = restaurant_df.sort_values(by="value_metric", ascending=False)
         top_item = restaurant_df.iloc[0]
 
         recommended_dish = {
@@ -334,38 +311,26 @@ def generate_recommendations(
             "Sugar (g)": top_item.get("Sugar (g)"),
         }
 
-        dietary_notes = []
-        if (
-            "vegetarian" in parsed_query["dietary_preferences"]
-            and top_item.get("is_vegetarian")
-        ):
+        dietary_notes: List[str] = []
+        if "vegetarian" in parsed_query["dietary_preferences"] and top_item.get("is_vegetarian"):
             dietary_notes.append("Vegetarian compliant")
         if "vegan" in parsed_query["dietary_preferences"] and top_item.get("is_vegan"):
             dietary_notes.append("Vegan compliant")
-        if "gluten" in parsed_query["excluded_ingredients"] and top_item.get(
-            "is_gluten_free"
-        ):
+        if "gluten" in parsed_query["excluded_ingredients"] and top_item.get("is_gluten_free"):
             dietary_notes.append("Gluten-free compliant")
-        if "dairy" in parsed_query["excluded_ingredients"] and top_item.get(
-            "is_dairy_free"
-        ):
+        if "dairy" in parsed_query["excluded_ingredients"] and top_item.get("is_dairy_free"):
             dietary_notes.append("Dairy-free compliant")
-        if "nuts" in parsed_query["excluded_ingredients"] and top_item.get(
-            "is_nut_free"
-        ):
+        if "nuts" in parsed_query["excluded_ingredients"] and top_item.get("is_nut_free"):
             dietary_notes.append("Nut-free compliant")
-        if "high-protein" in parsed_query["dietary_preferences"]:
-            if "Protein (g)" in all_menus_df.columns:
-                protein_threshold = all_menus_df["Protein (g)"].quantile(0.75)
-                if top_item.get("Protein (g)", 0) >= protein_threshold:
-                    dietary_notes.append("High-protein compliant")
+        if "high-protein" in parsed_query["dietary_preferences"] and "Protein (g)" in all_menus_df.columns:
+            protein_threshold = all_menus_df["Protein (g)"].quantile(0.75)
+            if top_item.get("Protein (g)", 0) >= protein_threshold:
+                dietary_notes.append("High-protein compliant")
 
         for excluded_item in parsed_query["excluded_ingredients"]:
             if excluded_item.lower() in ["seafood", "soy"]:
                 name_val = top_item.get("Name")
-                if not pd.isna(name_val) and excluded_item.lower() not in str(
-                    name_val
-                ).lower():
+                if pd.notna(name_val) and excluded_item.lower() not in str(name_val).lower():
                     dietary_notes.append(
                         f"Excluded {excluded_item} (by name check) compliant"
                     )
@@ -390,25 +355,22 @@ def generate_recommendations(
 # Apply dietary tagging once data is loaded
 if not all_menus_df.empty:
     all_menus_df = tag_dietary_preferences(all_menus_df.copy())
+    print(f"[backend] Tagged dietary preferences on {len(all_menus_df)} rows.")
 
 
 # -------------------------------------------------------------------
 # 3. Single entry point for the Streamlit front end
 # -------------------------------------------------------------------
 
-def get_recommendation(
-    cuisine: str, max_calories: int, restrictions: str
-) -> dict:
+def get_recommendation(cuisine: str, max_calories: int, restrictions: str) -> Dict[str, Any]:
     """
     Entry point for app.py.
 
     Takes structured inputs from the UI, builds a natural language query,
-    runs the notebook pipeline, and returns a single dish/restaurant in
-    a simple dict format.
+    runs the pipeline, and returns a single dish/restaurant in a simple dict.
     """
 
-    # Build a natural-language query similar to the original design
-    parts = []
+    parts: List[str] = []
     if cuisine:
         parts.append(f"{cuisine} meal")
     if max_calories:
@@ -425,7 +387,6 @@ def get_recommendation(
 
     recommendations = generate_recommendations(all_menus_df, parsed_output)
 
-    # If the pipeline returned a message (string)
     if isinstance(recommendations, str):
         return {
             "restaurant_name": "No match found",
@@ -444,7 +405,6 @@ def get_recommendation(
             "notes": "Try adjusting your query.",
         }
 
-    # Take the first restaurant and first dish
     first_rec = recommendations[0]
     restaurant_name = first_rec.get("Restaurant Name", "Unknown restaurant")
 
