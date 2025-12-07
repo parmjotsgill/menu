@@ -1,6 +1,3 @@
-import os
-print("FILES IN APP DIRECTORY:", os.listdir(Path(__file__).parent))
-
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Union
